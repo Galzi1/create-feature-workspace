@@ -5,121 +5,79 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ConfigFile,
 
-    [Parameter(Mandatory = $false)]
     [string]$WorkspacesRoot = "~/workspaces"
 )
 
-Set-StrictMode -Version Latest
-$ErrorActionPreference = 'Stop'
+$ErrorActionPreference = "Stop"
 
-function Expand-UserPath {
-    param([string]$PathValue)
+function Expand-PathValue {
+    param([string]$Value)
 
-    if ($PathValue -eq '~') {
-        return $HOME
+    if ($Value -eq "~") { return $HOME }
+    if ($Value.StartsWith("~/") -or $Value.StartsWith("~\")) {
+        return Join-Path $HOME $Value.Substring(2)
     }
-
-    if ($PathValue.StartsWith('~/') -or $PathValue.StartsWith('~\')) {
-        return Join-Path $HOME $PathValue.Substring(2)
-    }
-
-    return $PathValue
+    return $Value
 }
 
-function Parse-IniFile {
-    param([string]$PathValue)
+$WorkspacesRoot = Expand-PathValue $WorkspacesRoot
+$WorkspaceDir = Join-Path $WorkspacesRoot $FeatureName
+New-Item -ItemType Directory -Force -Path $WorkspaceDir | Out-Null
 
-    $sections = @()
-    $current = $null
+$section = $null
+$name = $null
+$path = $null
+$branch = $null
 
-    foreach ($rawLine in Get-Content -LiteralPath $PathValue) {
-        $line = $rawLine.Trim()
+function Add-RepoWorktree {
+    param(
+        [string]$Section,
+        [string]$Name,
+        [string]$Path,
+        [string]$Branch
+    )
 
-        if ([string]::IsNullOrWhiteSpace($line)) { continue }
-        if ($line.StartsWith(';') -or $line.StartsWith('#')) { continue }
+    if (-not $Section) { return }
 
-        if ($line -match '^\[(.+)\]$') {
-            if ($null -ne $current) {
-                $sections += $current
-            }
-            $current = [ordered]@{
-                Section = $matches[1]
-                Name    = $null
-                Path    = $null
-                Branch  = $null
-            }
-            continue
-        }
-
-        if ($line -match '^(.*?)=(.*)$') {
-            if ($null -eq $current) { continue }
-            $key = $matches[1].Trim()
-            $value = $matches[2].Trim()
-            switch ($key) {
-                'name'   { $current.Name = $value }
-                'path'   { $current.Path = $value }
-                'branch' { $current.Branch = $value }
-            }
-        }
+    if (-not $Name -or -not $Path -or -not $Branch) {
+        throw "Missing name/path/branch in section [$Section]"
     }
 
-    if ($null -ne $current) {
-        $sections += $current
-    }
+    $RepoPath = Expand-PathValue $Path
+    $Destination = Join-Path $WorkspaceDir $Name
 
-    return $sections
-}
-
-if (-not (Test-Path -LiteralPath $ConfigFile -PathType Leaf)) {
-    throw "Config file not found: $ConfigFile"
-}
-
-$WorkspacesRoot = Expand-UserPath $WorkspacesRoot
-$workspaceDir = Join-Path $WorkspacesRoot $FeatureName
-New-Item -ItemType Directory -Force -Path $workspaceDir | Out-Null
-
-$sections = Parse-IniFile -PathValue $ConfigFile
-if ($sections.Count -eq 0) {
-    throw 'No repository sections found in config file'
-}
-
-$repoCount = 0
-foreach ($repo in $sections) {
-    if ([string]::IsNullOrWhiteSpace($repo.Name)) {
-        throw "Section [$($repo.Section)] is missing required key: name"
-    }
-    if ([string]::IsNullOrWhiteSpace($repo.Path)) {
-        throw "Section [$($repo.Section)] is missing required key: path"
-    }
-    if ([string]::IsNullOrWhiteSpace($repo.Branch)) {
-        throw "Section [$($repo.Section)] is missing required key: branch"
-    }
-
-    $repoPath = Expand-UserPath $repo.Path
-    if (-not (Test-Path -LiteralPath $repoPath -PathType Container)) {
-        throw "Repository path does not exist for [$($repo.Section)]: $repoPath"
-    }
-
-    & git -C $repoPath rev-parse --is-inside-work-tree *> $null
+    & git -C $RepoPath worktree add -b $FeatureName $Destination $Branch
     if ($LASTEXITCODE -ne 0) {
-        throw "Path is not a git repository for [$($repo.Section)]: $repoPath"
+        throw "git worktree add failed for section [$Section]"
     }
-
-    $destination = Join-Path $workspaceDir $repo.Name
-    if (Test-Path -LiteralPath $destination) {
-        throw "Destination already exists for [$($repo.Section)]: $destination"
-    }
-
-    Write-Host "Creating worktree for [$($repo.Section)] -> $destination (branch: $FeatureName, base: $($repo.Branch))"
-    & git -C $repoPath worktree add -b $FeatureName $destination $repo.Branch
-    if ($LASTEXITCODE -ne 0) {
-        throw "git worktree add failed for [$($repo.Section)]"
-    }
-
-    $repoCount++
 }
 
-Write-Host ""
-Write-Host "Workspace created: $workspaceDir"
-Write-Host "Repositories added: $repoCount"
-Write-Host "Next step: cd $workspaceDir ; claude"
+foreach ($rawLine in Get-Content -LiteralPath $ConfigFile) {
+    $line = $rawLine.Trim()
+
+    if (-not $line -or $line.StartsWith("#") -or $line.StartsWith(";")) {
+        continue
+    }
+
+    if ($line -match '^\[(.+)\]$') {
+        Add-RepoWorktree $section $name $path $branch
+        $section = $matches[1]
+        $name = $null
+        $path = $null
+        $branch = $null
+        continue
+    }
+
+    if ($line -match '^(.*?)=(.*)$') {
+        $key = $matches[1].Trim()
+        $value = $matches[2].Trim()
+
+        switch ($key) {
+            "name"   { $name = $value }
+            "path"   { $path = $value }
+            "branch" { $branch = $value }
+        }
+    }
+}
+
+Add-RepoWorktree $section $name $path $branch
