@@ -46,7 +46,7 @@ function Add-RepoWorktree {
     $RepoPath = Expand-PathValue $Path
     $Destination = Join-Path $WorkspaceDir $Name
 
-    & git -C $RepoPath worktree add -b $FeatureName $Destination $Branch
+    git -C $RepoPath worktree add -b $FeatureName $Destination $Branch
     if ($LASTEXITCODE -ne 0) {
         throw "git worktree add failed for section [$Section]"
     }

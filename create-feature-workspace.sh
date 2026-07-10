@@ -55,9 +55,13 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     flush_repo
     section="${BASH_REMATCH[1]}"
     name=""; path=""; branch=""
-  elif [[ "$line" == *=* ]]; then
+  elif [[ "$line" == *"="* ]]; then
     key="${line%%=*}"
+    key="${key#"${key%%[![:space:]]*}"}"
+    key="${key%"${key##*[![:space:]]}"}"
     value="${line#*=}"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
     case "$key" in
       name) name="$value" ;;
       path) path="$value" ;;
